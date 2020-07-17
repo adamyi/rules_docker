@@ -124,7 +124,8 @@ function find_diffbase() {
 
 function import_config() {
   # Create an image from the image configuration file.
-  local name="${RUNFILES}/$1"
+  local relname="$1"
+  local name="${RUNFILES}/${relname}"
   shift 1
 
   local tmp_dir="$(mktemp -d)"
@@ -152,14 +153,31 @@ function import_config() {
     ALL_QUOTED+=("\"${diff_id}.tar\"")
   done
 
-  # Starting from our legacy diffbase, figure out which
-  # additional layers the Docker daemon already has.
+  LOCAL_DIFF_IDS=()
+  LAYERS=()
   while test $# -gt 0
   do
     local diff_id="$(cat "${RUNFILES}/$1")"
     local layer="${RUNFILES}/$2"
 
-    DIFF_IDS+=("\"sha256:${diff_id}\"")
+    LOCAL_DIFF_IDS+=("\"sha256:${diff_id}\"")
+    LAYERS+=("${layer}")
+    ALL_QUOTED+=("\"${diff_id}.tar\"")
+    shift 2
+  done
+
+  # skip if entire sequence already exists
+  if sequence_exists ${DIFF_IDS[@]} ${LOCAL_DIFF_IDS[@]}; then
+    DIFF_IDS+=(${LOCAL_DIFF_IDS[@]})
+    LOCAL_DIFF_IDS=()
+  fi
+
+  # Starting from our legacy diffbase, figure out which
+  # additional layers the Docker daemon already has.
+  while test "${#LOCAL_DIFF_IDS[@]}" -gt 0
+  do
+    local diff_id=${LOCAL_DIFF_IDS[0]}
+    local layer=${LAYERS[0]}
 
     if ! sequence_exists "${DIFF_IDS[@]}"; then
       # This sequence of diff-ids has not been seen,
@@ -168,20 +186,24 @@ function import_config() {
       break
     fi
 
-    ALL_QUOTED+=("\"${diff_id}.tar\"")
-    shift 2
+    LOCAL_DIFF_IDS=("${LOCAL_DIFF_IDS[@]:1}")
+    LAYERS=("${LAYERS[@]:1}")
+    DIFF_IDS+=("${diff_id}")
   done
 
   # Set up the list of layers we actually need to load,
   # from the cut-off established above.
   MISSING=()
-  while test $# -gt 0
+  while test "${#LOCAL_DIFF_IDS[@]}" -gt 0
   do
-    local diff_id="$(cat "${RUNFILES}/$1")"
-    local layer="${RUNFILES}/$2"
-    shift 2
+    local diff_id=${LOCAL_DIFF_IDS[0]}
+    local layer=${LAYERS[0]}
 
-    ALL_QUOTED+=("\"${diff_id}.tar\"")
+    LOCAL_DIFF_IDS=("${LOCAL_DIFF_IDS[@]:1}")
+    LAYERS=("${LAYERS[@]:1}")
+    DIFF_IDS+=("${diff_id}")
+
+    local diff_id="${diff_id:8:${#diff_id}-9}"
 
     # Only create the link if it doesn't exist.
     # Only add files to MISSING once.
@@ -205,7 +227,8 @@ EOF
   # We minimize reads / writes by symlinking the layers above
   # and then streaming exactly the layers we've established are
   # needed into the Docker daemon.
-  tar cPh "${MISSING[@]}" | "${DOCKER}" ${DOCKER_FLAGS} load
+  tar cPh "${MISSING[@]}" | "${DOCKER}" ${DOCKER_FLAGS} load -q
+  echo "Loaded ${relname}"
 }
 
 function tag_layer() {
@@ -228,16 +251,41 @@ function read_variables() {
   source ${new_file}
 }
 
+PIDS=()
+function async() {
+  # Launch the command asynchronously and track its process id.
+  "$@" &
+  PIDS+=($!)
+}
+
+function waitall() {
+  # Wait for all of the subprocesses, failing the script if any of them failed.
+  if [ "${#PIDS[@]}" != 0 ]; then
+    for pid in ${PIDS[@]}; do
+      wait ${pid}
+    done
+  fi
+  PIDS=()
+}
+
+echo "Running container incremental_load... This might take a while (especially for first run)"
+
 # Statements initializing stamp variables.
 %{stamp_statements}
+
+waitall
 
 # List of 'import_config' statements for all images.
 # This generated and injected by docker_*.
 %{load_statements}
 
+waitall
+
 # List of 'tag_layer' statements for all tags.
 # This generated and injected by docker_*.
 %{tag_statements}
+
+waitall
 
 # An optional "docker run" statement for invoking a loaded container.
 # This is not executed if the single argument --norun is passed or

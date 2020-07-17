@@ -227,7 +227,7 @@ def incremental_load(
         # First load the legacy base image, if it exists.
         if image.get("legacy"):
             load_statements += [
-                "load_legacy '%s'" % _get_runfile_path(ctx, image["legacy"]),
+                "async load_legacy '%s'" % _get_runfile_path(ctx, image["legacy"]),
             ]
 
         pairs = zip(image["diff_id"], image["unzipped_layer"])
@@ -235,7 +235,7 @@ def incremental_load(
         # Import the config and the subset of layers not present
         # in the daemon.
         load_statements += [
-            "import_config '%s' %s" % (
+            "async import_config '%s' %s" % (
                 _get_runfile_path(ctx, image["config"]),
                 " ".join([
                     "'%s' '%s'" % (
@@ -250,7 +250,7 @@ def incremental_load(
         # Now tag the imported config with the specified tag.
         tag_reference = tag if not stamp else tag.replace("{", "${")
         tag_statements += [
-            "tag_layer \"%s\" '%s'" % (
+            "async tag_layer \"%s\" '%s'" % (
                 # Turn stamp variable references into bash variables.
                 # It is notable that the only legal use of '{' in a
                 # tag would be for stamp variables, '$' is not allowed.
@@ -261,7 +261,7 @@ def incremental_load(
         if run:
             # Args are embedded into the image, so omitted here.
             run_statements += [
-                "\"${DOCKER}\" ${DOCKER_FLAGS} run %s %s" % (run_flags, tag_reference),
+                "async \"${DOCKER}\" ${DOCKER_FLAGS} run %s %s" % (run_flags, tag_reference),
             ]
 
     ctx.actions.expand_template(
@@ -276,7 +276,7 @@ def incremental_load(
             # variables, and turn references to them into bash variable
             # references.
             "%{stamp_statements}": "\n".join([
-                "read_variables %s" % _get_runfile_path(ctx, f)
+                "async read_variables %s" % _get_runfile_path(ctx, f)
                 for f in stamp_files
             ]),
             "%{tag_statements}": "\n".join(tag_statements),
